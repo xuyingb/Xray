@@ -14,7 +14,8 @@ show_help() {
             "   ip                                              返回当前主机的 IP"
             "   pbk                                             同等于 $is_core x25519"
             "   get-port                                        返回一个可用的端口"
-            "   ss2022                                          返回一个可用于 Shadowsocks 2022 的密码\n"
+            "   ss2022                                          返回一个可用于 Shadowsocks 2022 的密码"
+            "   vlessenc                                        生成 VLESS Encryption 字符串 (服务端+客户端)\n"
             "一般:"
             "   a, add [protocol] [args... | auto]              添加配置"
             "   c, change [name] [option] [args... | auto]      更改配置"
@@ -38,7 +39,8 @@ show_help() {
             "   sni [name] [ ip | domain]                       更改 serverName"
             "   seed [name] [seed | auto]                       更改 mKCP seed"
             "   new [name] [...]                                更改协议"
-            "   web [name] [domain]                             更改伪装网站\n"
+            "   web [name] [domain]                             更改伪装网站"
+            "   vlessenc [name]                                 启用/重新生成 VLESS Encryption\n"
             "进阶:"
             "   dns [...]                                       设置 DNS"
             "   dd, ddel [name...]                              删除多个配置**"
@@ -64,7 +66,7 @@ show_help() {
             "其他:"
             "   bbr                                             启用 BBR, 如果支持"
             "   bin [...]                                       运行 $is_core_name 命令, 例如: $is_core bin help"
-            "   api, x25519, tls, run, uuid  [...]              兼容 $is_core_name 命令"
+            "   api, x25519, tls, run, uuid, vlessenc [...]     兼容 $is_core_name 命令"
             "   h, help                                         显示此帮助界面\n"
         )
         for v in "${help_info[@]}"; do

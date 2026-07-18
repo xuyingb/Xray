@@ -9,9 +9,13 @@ protocol_list=(
     VMess-gRPC-TLS
     # VLESS-H2-TLS
     VLESS-WS-TLS
+    VLESS-WS-TLS-Enc
     VLESS-gRPC-TLS
+    VLESS-gRPC-TLS-Enc
     VLESS-XHTTP-TLS
+    VLESS-XHTTP-TLS-Enc
     VLESS-REALITY
+    VLESS-REALITY-Enc
     # Trojan-H2-TLS
     Trojan-WS-TLS
     Trojan-gRPC-TLS
@@ -21,6 +25,7 @@ protocol_list=(
     VMess-mKCP-dynamic-port
     # VMess-QUIC-dynamic-port
     Socks
+    Hysteria
 )
 ss_method_list=(
     aes-128-gcm
@@ -85,6 +90,7 @@ info_list=(
     "指纹 (Fingerprint)"
     "公钥 (Public key)"
     "用户名 (Username)"
+    "VLESS 加密 (vless encryption)"
 )
 change_list=(
     "更改协议"
@@ -103,6 +109,7 @@ change_list=(
     "更改伪装网站"
     "更改 mKCP seed"
     "更改用户名 (Username)"
+    "更改 VLESS 加密"
 )
 servername_list=(
     www.amazon.com
@@ -347,7 +354,7 @@ create() {
         # get json
         [[ $is_change || ! $json_str ]] && get protocol $2
         is_listen='listen:"0.0.0.0"'
-        [[ $host ]] && is_listen=${is_listen/0.0.0.0/127.0.0.1}
+        [[ $host && ! $is_hysteria ]] && is_listen=${is_listen/0.0.0.0/127.0.0.1}
         is_sniffing='sniffing:{enabled:true,destOverride:["http","tls"]}'
         [[ $is_reality ]] && is_sniffing='sniffing:{enabled:true,destOverride:["http","tls"],routeOnly:true}'
         is_new_json=$(jq '{inbounds:[{tag:"'$is_config_name'",port:'"$port"','"$is_listen"',protocol:"'$is_protocol'",'"$json_str"','"$is_sniffing"'}]}' <<<{})
@@ -380,9 +387,22 @@ create() {
             api add $is_json_file $is_dynamic_port_link_file &>/dev/null
         fi
         # caddy auto tls
-        [[ $is_caddy && $host && ! $is_no_auto_tls ]] && {
+        if [[ $is_caddy && $host && ! $is_no_auto_tls ]]; then
             create caddy $net
-        }
+        elif [[ $is_hysteria && $host && $is_caddy ]]; then
+            create caddy hy
+            manage restart caddy &
+            sleep 2
+            # copy caddy cert to /etc/xray/ssl/
+            _mkdir /etc/xray/ssl
+            is_caddy_home="/root/.local/share/caddy"
+            [[ -d /var/lib/caddy/.local/share/caddy ]] && is_caddy_home="/var/lib/caddy/.local/share/caddy"
+            is_caddy_cert_dir="$is_caddy_home/certificates/acme-v02.api.letsencrypt.org-directory/$host"
+            if [[ -f $is_caddy_cert_dir/$host.crt && -f $is_caddy_cert_dir/$host.key ]]; then
+                cp -f $is_caddy_cert_dir/$host.crt /etc/xray/ssl/fullchain.pem
+                cp -f $is_caddy_cert_dir/$host.key /etc/xray/ssl/key.pem
+            fi
+        fi
         # restart core
         [[ $is_api_fail ]] && manage restart &
         ;;
@@ -568,10 +588,10 @@ change() {
         [[ ! $is_new_path ]] && ask string is_new_path "请输入新路径:"
         add $net auto auto $is_new_path
         ;;
-    4)
+     4)
         # new password
         is_new_pass=$3
-        if [[ $net == 'ss' || $is_trojan || $is_socks_pass ]]; then
+        if [[ $net == 'ss' || $is_trojan || $is_socks_pass || $net == 'hy' ]]; then
             [[ $is_auto ]] && get_uuid && is_new_pass=$tmp_uuid
         else
             err "($is_config_file) 不支持更改密码."
@@ -734,6 +754,15 @@ change() {
         # new socks user
         [[ ! $is_socks_user ]] && err "($is_config_file) 不支持更改用户名 (Username)."
         ask string is_socks_user "请输入新用户名 (Username):"
+        add $net
+        ;;
+    16)
+        # vless encryption
+        [[ $is_protocol != 'vless' ]] && err "($is_config_file) 不支持更改 VLESS 加密."
+        is_dont_show_info=1
+        get vlessenc
+        msg "服务端 decryption: $(_green $is_vless_enc_decryption)"
+        msg "客户端 encryption: $(_green $is_vless_enc_encryption)"
         add $net
         ;;
     esac
@@ -908,14 +937,29 @@ add() {
         ws | grpc | vws | vgrpc | tws | tgrpc)
             is_new_protocol=$(sed -E "s/^V/VLESS-/;s/^T/Trojan-/;/^(W|H|G)/{s/^/VMess-/};s/G/g/" <<<${is_lower^^})-TLS
             ;;
+        vws-enc)
+            is_new_protocol=VLESS-WS-TLS-Enc
+            ;;
+        vgrpc-enc)
+            is_new_protocol=VLESS-gRPC-TLS-Enc
+            ;;
+        vxhttp-enc)
+            is_new_protocol=VLESS-XHTTP-TLS-Enc
+            ;;
         xhttp)
             is_new_protocol=VLESS-XHTTP-TLS
             ;;
         r | reality)
             is_new_protocol=VLESS-REALITY
             ;;
+        r-enc | reality-enc)
+            is_new_protocol=VLESS-REALITY-Enc
+            ;;
         ss)
             is_new_protocol=Shadowsocks
+            ;;
+        hy | hysteria)
+            is_new_protocol=Hysteria
             ;;
         door)
             is_new_protocol=Dokodemo-Door
@@ -940,6 +984,14 @@ add() {
     [[ ! $is_new_protocol ]] && ask set_protocol
 
     case ${is_new_protocol,,} in
+    *-tls-enc)
+        is_enc_protocol=1
+        is_use_tls=1
+        is_use_host=$2
+        is_use_uuid=$3
+        is_use_path=$4
+        is_add_opts="[host] [uuid] [/path]"
+        ;;
     *-tls)
         is_use_tls=1
         is_use_host=$2
@@ -959,6 +1011,14 @@ add() {
         else
             is_add_opts="[port] [uuid] [type]"
         fi
+        ;;
+    *reality-enc*)
+        is_enc_protocol=1
+        is_reality=1
+        is_use_port=$2
+        is_use_uuid=$3
+        is_use_servername=$4
+        is_add_opts="[port] [uuid] [sni]"
         ;;
     *reality*)
         is_reality=1
@@ -985,6 +1045,14 @@ add() {
         is_use_socks_user=$3
         is_use_socks_pass=$4
         is_add_opts="[port] [username] [password]"
+        ;;
+    hysteria)
+        is_use_host=$2
+        is_use_pass=$3
+        is_use_port=$4
+        is_add_opts="[host] [password] [port]"
+        is_use_tls=1
+        is_hysteria=1
         ;;
     *http)
         is_use_port=$2
@@ -1122,6 +1190,12 @@ add() {
         [[ ! $host ]] && ask string host "请输入域名:"
         # test host dns
         get host-test
+        # for hysteria: ask port/password, set no-auto-tls (Xray handles TLS directly)
+        if [[ $is_hysteria ]]; then
+            is_no_auto_tls=1
+            [[ ! $port ]] && ask string port "请输入 Hysteria 端口:"
+            [[ ! $ss_password ]] && ask string ss_password "请设置密码:"
+        fi
     else
         # for main menu start, dont auto create args
         if [[ $is_main_start ]]; then
@@ -1142,6 +1216,12 @@ add() {
             shadowsocks)
                 # set method
                 [[ ! $ss_method ]] && ask set_ss_method
+                # set password
+                [[ ! $ss_password ]] && ask string ss_password "请设置密码:"
+                warn "Shadowsocks 已被 Xray-core 标记为弃用，缺乏 Forward Secrecy 等安全特性，未来可能被移除。"
+                msg "建议迁移至 VLESS Encryption: $(_green "$is_core change <name> new vless")"
+                ;;
+            hysteria)
                 # set password
                 [[ ! $ss_password ]] && ask string ss_password "请设置密码:"
                 ;;
@@ -1187,11 +1267,21 @@ add() {
         get install-caddy
     fi
 
+    # generate vless encryption if -enc protocol
+    if [[ $is_enc_protocol ]]; then
+        is_dont_show_info=1
+        get vlessenc
+        msg "\n$(_green 已自动生成 VLESS Encryption)\n"
+        unset is_enc_protocol
+    fi
+
     # create json
     create server $is_new_protocol
 
     # show config info.
     info
+    # cleanup
+    unset is_hysteria
 }
 
 # get config info
@@ -1227,7 +1317,7 @@ get() {
         get file $2
         if [[ $is_config_file ]]; then
             is_json_str=$(cat $is_conf_dir/"$is_config_file")
-            is_json_data_base=$(jq '.inbounds[0]|.protocol,.port,(.settings|(.clients[0]|.id,.password),.method,.password,.address,.port,.detour.to,(.accounts[0]|.user,.pass))' <<<$is_json_str)
+            is_json_data_base=$(jq '.inbounds[0]|.protocol,.port,(.settings|(.clients[0]|.id,.password),.method,(.users[0]|.auth)//.password,.address,.port,.detour.to,(.accounts[0]|.user,.pass))' <<<$is_json_str)
             [[ $? != 0 ]] && err "无法读取此文件: $is_config_file"
             is_json_data_more=$(jq '.inbounds[0]|.streamSettings|.network,.tcpSettings.header.type,((.finalmask|.udp[1].settings.password,.udp[0].type)//(.kcpSettings|.seed,.header.type)),.quicSettings.header.type,.wsSettings.path,.httpSettings.path,.grpcSettings.serviceName,(.xhttpSettings.path//.splithttpSettings.path)' <<<$is_json_str)
             is_json_data_host=$(jq '.inbounds[0]|.streamSettings|.grpc_host,.wsSettings.headers.Host,.httpSettings.host[0],(.xhttpSettings.host//.splithttpSettings.host)' <<<$is_json_str)
@@ -1244,12 +1334,32 @@ get() {
                 [[ ${!v} == 'null' ]] && unset $v
             done
 
+            # vless encryption detect
+            if [[ $is_protocol == 'vless' ]]; then
+                is_vless_enc=$(jq -r '.inbounds[0].settings.decryption // empty' <<<$is_json_str)
+                if [[ $is_vless_enc && $is_vless_enc != 'none' ]]; then
+                    is_vless_enc_decryption=$is_vless_enc
+                    # derive client encryption value by replacing ticket TTL with 0rtt
+                    is_vless_enc_encryption=$(sed -E 's/\.[0-9]+s\b/.0rtt/;s/\.[0-9]+-[0-9]+s\b/.0rtt/' <<<$is_vless_enc)
+                else
+                    is_vless_enc=
+                fi
+            fi
+
             # splithttp
             if [[ $net == 'splithttp' ]]; then
                 net=xhttp
             fi
+            # hysteria
+            if [[ $net == 'hysteria' ]]; then
+                net=hy
+            fi
             path="${ws_path}${h2_path}${grpc_path}${xhttp_path}"
             host="${ws_host}${h2_host}${grpc_host}${xhttp_host}"
+            # hysteria: extract host from filename if not found in streamSettings
+            if [[ $net == 'hy' && ! $host ]]; then
+                host=$(sed 's/^[^-]*-//;s/\.json$//' <<<$is_config_file)
+            fi
             header_type="${tcp_type}${kcp_type}${quic_type}"
             if [[ $is_reality == 'reality' ]]; then
                 net=reality
@@ -1290,12 +1400,22 @@ get() {
             ;;
         vless*)
             is_protocol=vless
-            is_server_id_json='settings:{clients:[{id:"'$uuid'"}],decryption:"none"}'
-            is_client_id_json='settings:{vnext:[{address:"'$is_addr'",port:'"$port"',users:[{id:"'$uuid'",encryption:"none"}]}]}'
+            # use vless encryption if set
+            [[ $is_vless_enc_decryption || $is_vless_enc ]] && {
+                [[ $is_vless_enc && ! $is_vless_enc_decryption ]] && is_vless_enc_decryption=$is_vless_enc
+                is_vless_decryption=$is_vless_enc_decryption
+            } || {
+                is_vless_decryption="none"
+            }
+            is_vless_encryption="${is_vless_enc_encryption:-$is_vless_decryption}"
+            is_server_id_json='settings:{clients:[{id:"'$uuid'"}],decryption:"'$is_vless_decryption'"}'
+            is_client_id_json='settings:{vnext:[{address:"'$is_addr'",port:'"$port"',users:[{id:"'$uuid'",encryption:"'$is_vless_encryption'"}]}]}'
             if [[ $is_reality ]]; then
-                is_server_id_json='settings:{clients:[{id:"'$uuid'",flow:"xtls-rprx-vision"}],decryption:"none"}'
-                is_client_id_json='settings:{vnext:[{address:"'$is_addr'",port:'"$port"',users:[{id:"'$uuid'",encryption:"none",flow:"xtls-rprx-vision"}]}]}'
+                is_server_id_json='settings:{clients:[{id:"'$uuid'",flow:"xtls-rprx-vision"}],decryption:"'$is_vless_decryption'"}'
+                is_client_id_json='settings:{vnext:[{address:"'$is_addr'",port:'"$port"',users:[{id:"'$uuid'",encryption:"'$is_vless_encryption'",flow:"xtls-rprx-vision"}]}]}'
             fi
+            # clean up
+            [[ $is_vless_decryption == 'none' ]] && is_vless_enc_decryption= && is_vless_enc_encryption= && is_vless_enc=
             ;;
         trojan*)
             is_protocol=trojan
@@ -1314,6 +1434,8 @@ get() {
             }
             is_client_id_json='settings:{servers:[{address:"'$is_addr'",port:'"$port"',method:"'$ss_method'",password:"'$ss_password'",}]}'
             json_str='settings:{method:"'$ss_method'",password:"'$ss_password'",network:"tcp,udp"}'
+            warn "Shadowsocks 已被 Xray-core 标记为弃用，缺乏 Forward Secrecy 等安全特性，未来可能被移除。"
+            msg "建议迁移至 VLESS Encryption，使用命令: $(_green "$is_core change <name> new vless")"
             ;;
         dokodemo-door*)
             net=door
@@ -1331,6 +1453,25 @@ get() {
             [[ ! $is_socks_user ]] && is_socks_user=233boy
             [[ ! $is_socks_pass ]] && is_socks_pass=$uuid
             json_str='settings:{auth:"password",accounts:[{user:"'$is_socks_user'",pass:"'$is_socks_pass'"}],udp:true,ip:"0.0.0.0"}'
+            ;;
+        hysteria*)
+            net=hy
+            is_protocol=hysteria
+            [[ ! $ss_password ]] && ss_password=$uuid
+            is_client_id_json='settings:{servers:[{address:"'$is_addr'",port:'"$port"',password:"'$ss_password'"}]}'
+            # detect caddy cert path
+            if [[ -f /etc/xray/ssl/fullchain.pem ]]; then
+                is_hy_cert="/etc/xray/ssl/fullchain.pem"
+                is_hy_key="/etc/xray/ssl/key.pem"
+            else
+                is_caddy_home="/root/.local/share/caddy"
+                [[ -d /var/lib/caddy/.local/share/caddy ]] && is_caddy_home="/var/lib/caddy/.local/share/caddy"
+                is_caddy_cert_dir="$is_caddy_home/certificates/acme-v02.api.letsencrypt.org-directory/$host"
+                is_hy_cert="$is_caddy_cert_dir/$host.crt"
+                is_hy_key="$is_caddy_cert_dir/$host.key"
+            fi
+            json_str='settings:{version:2,users:[{auth:"'$ss_password'"}]},streamSettings:{network:"hysteria",hysteriaSettings:{version:2,auth:"'$ss_password'"},security:"tls",tlsSettings:{certificates:[{certificateFile:"'$is_hy_cert'",keyFile:"'$is_hy_key'"}]}}'
+            is_no_auto_tls=1
             ;;
         *)
             err "无法识别协议: $is_config_file"
@@ -1445,6 +1586,19 @@ get() {
         fi
         [[ $? != 0 ]] && err "无法生成 Shadowsocks 2022 密码, 请安装 openssl."
         ;;
+    vlessenc)
+        is_vlessenc_output=$($is_core_bin vlessenc 2>/dev/null)
+        [[ ! $is_vlessenc_output ]] && err "生成 VLESS Encryption 失败, 请确认 Xray-core 版本支持 vlessenc 命令."
+        is_vless_enc_decryption=$(sed -n '/^decryption: /{s/.*decryption: //;p}' <<<$is_vlessenc_output)
+        is_vless_enc_encryption=$(sed -n '/^encryption: /{s/.*encryption: //;p}' <<<$is_vlessenc_output)
+        # fallback: try parsing as raw output
+        [[ ! $is_vless_enc_decryption ]] && is_vless_enc_decryption=$(head -1 <<<$is_vlessenc_output)
+        [[ ! $is_vless_enc_encryption ]] && is_vless_enc_encryption=$is_vless_enc_decryption
+        if [[ ! $is_dont_show_info ]]; then
+            msg "\n$(_green 服务端 decryption:)\n$is_vless_enc_decryption"
+            msg "\n$(_green 客户端 encryption:)\n$is_vless_enc_encryption\n"
+        fi
+        ;;
     ping)
         # is_ip_type="-4"
         # [[ $(grep ":" <<<$ip) ]] && is_ip_type="-6"
@@ -1554,6 +1708,8 @@ info() {
         is_info_show=(0 1 2 10 11)
         is_url="ss://$(echo -n ${ss_method}:${ss_password} | base64 -w 0)@${is_addr}:${port}#233boy-$net-${is_addr}"
         is_info_str=($is_protocol $is_addr $port $ss_password $ss_method)
+        warn "Shadowsocks 已被 Xray-core 标记为弃用，缺乏 Forward Secrecy 等安全特性，未来可能被移除。"
+        msg "建议迁移至 VLESS Encryption: $(_green "$is_core change $is_config_name new vless")"
         ;;
     ws | h2 | grpc | xhttp)
         is_color=45
@@ -1578,6 +1734,12 @@ info() {
         [[ $is_caddy ]] && is_can_change+=(13)
         is_info_str=($is_protocol $is_addr $is_https_port $uuid $net $host $path 'tls')
         ;;
+    hy)
+        is_can_change=(0 1 2 4)
+        is_info_show=(0 1 2 10 6)
+        is_url="hysteria2://$ss_password@$host:$port?insecure=0&mport=$port#233boy-$net-$host"
+        is_info_str=($is_protocol $is_addr $port $ss_password $host)
+        ;;
     door)
         is_can_change=(0 1 8 9)
         is_info_show=(0 1 2 13 14)
@@ -1596,6 +1758,14 @@ info() {
         ;;
     esac
     [[ $is_dont_show_info || $is_gen || $is_dont_auto_exit ]] && return # dont show info
+    # append vless encryption info
+    if [[ $is_protocol == 'vless' ]]; then
+        is_can_change+=(16)
+        if [[ $is_vless_enc_decryption ]]; then
+            is_info_show+=(20)
+            is_info_str+=($(_green "已启用"))
+        fi
+    fi
     msg "-------------- $is_config_name -------------"
     for ((i = 0; i < ${#is_info_show[@]}; i++)); do
         a=${info_list[${is_info_show[$i]}]}
@@ -1614,12 +1784,24 @@ info() {
         msg "\e[4;${is_color}m${is_url}\e[0m"
     fi
     if [[ $is_no_auto_tls ]]; then
-        is_tmp_path=$path
-        [[ $net == 'grpc' ]] && is_tmp_path="/$path/*"
-        msg "------------- no-auto-tls INFO -------------"
-        msg "端口(port): $port"
-        msg "路径(path): $is_tmp_path"
-        msg "\e[41m帮助(help)\e[0m: $(msg_ul https://233boy.com/$is_core/no-auto-tls/)"
+        if [[ $net == 'hy' ]]; then
+            if [[ -f /etc/xray/ssl/fullchain.pem ]]; then
+                msg "------------- Hysteria TLS -------------"
+                msg "TLS: $(_green 已配置)"
+                msg "证书: /etc/xray/ssl/fullchain.pem"
+            else
+                msg "------------- Hysteria TLS -------------"
+                msg "TLS: $(_yellow 等待证书签发，请稍后重启 Xray)"
+                msg "证书路径: /etc/xray/ssl/"
+            fi
+        else
+            is_tmp_path=$path
+            [[ $net == 'grpc' ]] && is_tmp_path="/$path/*"
+            msg "------------- no-auto-tls INFO -------------"
+            msg "端口(port): $port"
+            msg "路径(path): $is_tmp_path"
+            msg "\e[41m帮助(help)\e[0m: $(msg_ul https://233boy.com/$is_core/no-auto-tls/)"
+        fi
     fi
     footer_msg
 }
@@ -1914,7 +2096,7 @@ main() {
             update $is_update_name $is_update_ver
         fi
         ;;
-    ssss | ss2022)
+    ssss | ss2022 | vlessenc)
         get $@
         ;;
     s | status)

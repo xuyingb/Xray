@@ -1,7 +1,7 @@
 #!/bin/bash
 
-author=233boy
-# github=https://github.com/233boy/xray
+author=xuyingb
+# github=https://github.com/xuyingb/Xray
 
 # bash fonts colors
 red='\e[31m'

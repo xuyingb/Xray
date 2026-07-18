@@ -46,6 +46,12 @@ ${host}:${is_https_port} {
     import ${is_caddy_site_file}.add
 }"
         ;;
+    hy)
+        cat >${is_caddy_site_file} <<<"
+${host}:${is_https_port} {
+    respond \"OK\"
+}"
+        ;;
     proxy)
         
         cat >${is_caddy_site_file}.add <<<"

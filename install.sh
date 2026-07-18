@@ -1,7 +1,7 @@
 #!/bin/bash
 
-author=233boy
-# github=https://github.com/233boy/xray
+author=xuyingb
+# github=https://github.com/xuyingb/Xray
 
 # bash fonts colors
 red='\e[31m'
@@ -21,7 +21,7 @@ _magenta() { echo -e ${magenta}$@${none}; }
 _red_bg() { echo -e "\e[41m$@${none}"; }
 
 is_err=$(_red_bg 错误!)
-is_warn=$(_red_bg 警告!)
+is_warn=$(_red_bg 警告!) 
 
 err() {
     echo -e "\n$is_err $@\n" && exit 1
@@ -81,7 +81,7 @@ is_log_dir=/var/log/$is_core
 is_sh_bin=/usr/local/bin/$is_core
 is_sh_dir=$is_core_dir/sh
 is_sh_repo=$author/$is_core
-is_pkg="wget unzip"
+is_pkg="wget unzip git"
 is_config_json=$is_core_dir/config.json
 tmp_var_lists=(
     tmpcore
@@ -185,25 +185,34 @@ download() {
         name=$is_core_name
         tmpfile=$tmpcore
         is_ok=$is_core_ok
+
+        msg warn "下载 ${name} > ${link}"
+        if _wget -t 3 -q -c $link -O $tmpfile; then
+            mv -f $tmpfile $is_ok
+        fi
         ;;
     sh)
-        link=https://github.com/${is_sh_repo}/releases/latest/download/code.zip
         name="$is_core_name 脚本"
         tmpfile=$tmpsh
         is_ok=$is_sh_ok
+
+        msg warn "克隆 ${name} > https://github.com/${is_sh_repo}.git"
+        if git clone --depth 1 https://github.com/${is_sh_repo}.git $tmpfile; then
+            mv -f $tmpfile $is_ok
+        fi
         ;;
     jq)
         link=https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-linux-$is_jq_arch
         name="jq"
         tmpfile=$tmpjq
         is_ok=$is_jq_ok
+
+        msg warn "下载 ${name} > ${link}"
+        if _wget -t 3 -q -c $link -O $tmpfile; then
+            mv -f $tmpfile $is_ok
+        fi
         ;;
     esac
-
-    msg warn "下载 ${name} > ${link}"
-    if _wget -t 3 -q -c $link -O $tmpfile; then
-        mv -f $tmpfile $is_ok
-    fi
 }
 
 # get server ip
@@ -227,8 +236,8 @@ check_status() {
             msg err "下载 ${is_core_name} 失败"
             is_fail=1
         }
-        [[ ! -f $is_sh_ok ]] && {
-            msg err "下载 ${is_core_name} 脚本失败"
+        [[ ! -e $is_sh_ok ]] && {
+            msg err "克隆 ${is_core_name} 脚本失败"
             is_fail=1
         }
         [[ ! -f $is_jq_ok ]] && {
@@ -410,8 +419,10 @@ main() {
     if [[ $local_install ]]; then
         cp -rf $PWD/* $is_sh_dir
     else
-        unzip -qo $is_sh_ok -d $is_sh_dir
+        cp -rf $is_sh_ok/* $is_sh_dir
     fi
+    # fix CRLF to LF, prevent syntax errors on Linux
+    sed -i 's/\r$//' $is_sh_dir/src/*.sh $is_sh_dir/*.sh 2>/dev/null
 
     # create core bin dir
     mkdir -p $is_core_dir/bin
