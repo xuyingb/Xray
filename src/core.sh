@@ -389,18 +389,14 @@ create() {
         # caddy auto tls
         if [[ $is_caddy && $host && ! $is_no_auto_tls ]]; then
             create caddy $net
-        elif [[ $is_hysteria && $host && $is_caddy ]]; then
-            create caddy hy
-            manage restart caddy &
-            sleep 2
-            # copy caddy cert to /etc/xray/ssl/
+        elif [[ $is_hysteria && $host ]]; then
             _mkdir /etc/xray/ssl
-            is_caddy_home="/root/.local/share/caddy"
-            [[ -d /var/lib/caddy/.local/share/caddy ]] && is_caddy_home="/var/lib/caddy/.local/share/caddy"
-            is_caddy_cert_dir="$is_caddy_home/certificates/acme-v02.api.letsencrypt.org-directory/$host"
-            if [[ -f $is_caddy_cert_dir/$host.crt && -f $is_caddy_cert_dir/$host.key ]]; then
-                cp -f $is_caddy_cert_dir/$host.crt /etc/xray/ssl/fullchain.pem
-                cp -f $is_caddy_cert_dir/$host.key /etc/xray/ssl/key.pem
+            if [[ ! -f /etc/xray/ssl/${host}.crt ]]; then
+                openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+                    -subj "/CN=$host" \
+                    -addext "subjectAltName=DNS:$host" \
+                    -keyout "/etc/xray/ssl/${host}.key" \
+                    -out "/etc/xray/ssl/${host}.crt" 2>/dev/null
             fi
         fi
         # restart core
@@ -1459,19 +1455,14 @@ get() {
             is_protocol=hysteria
             [[ ! $ss_password ]] && ss_password=$uuid
             is_client_id_json='settings:{servers:[{address:"'$is_addr'",port:'"$port"',password:"'$ss_password'"}]}'
-            # detect caddy cert path
-            if [[ -f /etc/xray/ssl/fullchain.pem ]]; then
-                is_hy_cert="/etc/xray/ssl/fullchain.pem"
-                is_hy_key="/etc/xray/ssl/key.pem"
-            else
-                is_caddy_home="/root/.local/share/caddy"
-                [[ -d /var/lib/caddy/.local/share/caddy ]] && is_caddy_home="/var/lib/caddy/.local/share/caddy"
-                is_caddy_cert_dir="$is_caddy_home/certificates/acme-v02.api.letsencrypt.org-directory/$host"
-                is_hy_cert="$is_caddy_cert_dir/$host.crt"
-                is_hy_key="$is_caddy_cert_dir/$host.key"
+            is_hy_cert="/etc/xray/ssl/${host}.crt"
+            is_hy_key="/etc/xray/ssl/${host}.key"
+            if [[ -f "$is_hy_cert" ]]; then
+                is_pinned_sha256=$(openssl x509 -noout -fingerprint -sha256 -in "$is_hy_cert" 2>/dev/null | sed 's/.*=//;s/://g' | tr '[:upper:]' '[:lower:]')
             fi
             json_str='settings:{version:2,users:[{auth:"'$ss_password'"}]},streamSettings:{network:"hysteria",hysteriaSettings:{version:2,auth:"'$ss_password'"},security:"tls",tlsSettings:{certificates:[{certificateFile:"'$is_hy_cert'",keyFile:"'$is_hy_key'"}]}}'
             is_no_auto_tls=1
+            [[ $is_pinned_sha256 ]] && is_stream='security:"tls",tlsSettings:{pinnedPeerCertSha256:"'$is_pinned_sha256'"}'
             ;;
         *)
             err "无法识别协议: $is_config_file"
@@ -1737,7 +1728,10 @@ info() {
     hy)
         is_can_change=(0 1 2 4)
         is_info_show=(0 1 2 10 6)
-        is_url="hysteria2://$ss_password@$host:$port?insecure=0&mport=$port#233boy-$net-$host"
+        if [[ -f /etc/xray/ssl/${host}.crt ]]; then
+            is_hy_pin_sha256_b64=$(openssl x509 -in "/etc/xray/ssl/${host}.crt" -outform DER 2>/dev/null | openssl dgst -sha256 -binary 2>/dev/null | openssl base64 2>/dev/null | tr -d '=' | tr '+/' '-_')
+        fi
+        is_url="hysteria2://$ss_password@$host:$port?insecure=0&pinSHA256=$is_hy_pin_sha256_b64&mport=$port#233boy-$net-$host"
         is_info_str=($is_protocol $is_addr $port $ss_password $host)
         ;;
     door)
@@ -1785,13 +1779,13 @@ info() {
     fi
     if [[ $is_no_auto_tls ]]; then
         if [[ $net == 'hy' ]]; then
-            if [[ -f /etc/xray/ssl/fullchain.pem ]]; then
+            if [[ -f /etc/xray/ssl/${host}.crt ]]; then
                 msg "------------- Hysteria TLS -------------"
-                msg "TLS: $(_green 已配置)"
-                msg "证书: /etc/xray/ssl/fullchain.pem"
+                msg "TLS: $(_green 已配置 [自签证书])"
+                msg "证书: /etc/xray/ssl/${host}.crt"
             else
                 msg "------------- Hysteria TLS -------------"
-                msg "TLS: $(_yellow 等待证书签发，请稍后重启 Xray)"
+                msg "TLS: $(_yellow 自签证书未生成，请重启脚本重新添加配置)"
                 msg "证书路径: /etc/xray/ssl/"
             fi
         else
