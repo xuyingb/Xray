@@ -397,6 +397,14 @@ create() {
                     -addext "subjectAltName=DNS:$host" \
                     -keyout "/etc/xray/ssl/${host}.key" \
                     -out "/etc/xray/ssl/${host}.crt" 2>/dev/null
+                # fallback for older openssl without -addext
+                [[ $? != 0 ]] && {
+                    openssl req -new -newkey rsa:2048 -days 3650 -nodes -x509 \
+                        -subj "/CN=$host" \
+                        -keyout "/etc/xray/ssl/${host}.key" \
+                        -out "/etc/xray/ssl/${host}.crt" \
+                        -extensions san -config <(cat /etc/ssl/openssl.cnf <(printf "[san]\nsubjectAltName=DNS:$host")) 2>/dev/null
+                }
             fi
         fi
         # restart core
@@ -1459,10 +1467,16 @@ get() {
             is_hy_key="/etc/xray/ssl/${host}.key"
             if [[ -f "$is_hy_cert" ]]; then
                 is_pinned_sha256=$(openssl x509 -noout -fingerprint -sha256 -in "$is_hy_cert" 2>/dev/null | sed 's/.*=//;s/://g' | tr '[:upper:]' '[:lower:]')
+                # validate: must be exactly 64 hex chars
+                [[ ! $is_pinned_sha256 =~ ^[0-9a-f]{64}$ ]] && is_pinned_sha256=
             fi
             json_str='settings:{version:2,users:[{auth:"'$ss_password'"}]},streamSettings:{network:"hysteria",hysteriaSettings:{version:2,auth:"'$ss_password'"},security:"tls",tlsSettings:{certificates:[{certificateFile:"'$is_hy_cert'",keyFile:"'$is_hy_key'"}]}}'
             is_no_auto_tls=1
-            [[ $is_pinned_sha256 ]] && is_stream='security:"tls",tlsSettings:{pinnedPeerCertSha256:"'$is_pinned_sha256'"}'
+            if [[ $is_pinned_sha256 ]]; then
+                is_stream='network:"hysteria",security:"tls",tlsSettings:{pinnedPeerCertSha256:"'$is_pinned_sha256'"}'
+            else
+                is_stream=
+            fi
             ;;
         *)
             err "无法识别协议: $is_config_file"
