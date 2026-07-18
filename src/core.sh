@@ -536,6 +536,7 @@ change() {
     }
     is_old_net=$net
     [[ $host ]] && net=$is_protocol-$net-tls
+    [[ $is_old_net == 'hy' ]] && net=hy
     [[ $is_reality ]] && net=reality
     [[ $is_dynamic_port ]] && net=${net}d
     [[ $3 == 'auto' ]] && is_auto=1
@@ -1466,9 +1467,9 @@ get() {
             is_hy_cert="/etc/xray/ssl/${host}.crt"
             is_hy_key="/etc/xray/ssl/${host}.key"
             if [[ -f "$is_hy_cert" ]]; then
-                is_pinned_sha256=$(openssl x509 -noout -fingerprint -sha256 -in "$is_hy_cert" 2>/dev/null | sed 's/.*=//;s/://g' | tr '[:upper:]' '[:lower:]')
-                # validate: must be exactly 64 hex chars
-                [[ ! $is_pinned_sha256 =~ ^[0-9a-f]{64}$ ]] && is_pinned_sha256=
+                is_pinned_sha256=$(openssl x509 -noout -fingerprint -sha256 -in "$is_hy_cert" 2>/dev/null | sed 's/.*=//;s/://g')
+                is_pinned_sha256="${is_pinned_sha256,,}"
+                [[ $is_pinned_sha256 =~ ^[0-9a-f]{64}$ ]] || is_pinned_sha256=
             fi
             json_str='settings:{version:2,users:[{auth:"'$ss_password'"}]},streamSettings:{network:"hysteria",hysteriaSettings:{version:2,auth:"'$ss_password'"},security:"tls",tlsSettings:{certificates:[{certificateFile:"'$is_hy_cert'",keyFile:"'$is_hy_key'"}]}}'
             is_no_auto_tls=1
